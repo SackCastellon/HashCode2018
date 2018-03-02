@@ -4,6 +4,7 @@
  */
 
 import java.io.File
+import java.util.*
 import kotlin.math.absoluteValue
 import kotlin.math.sign
 
@@ -11,9 +12,9 @@ val dataNames = listOf("a_example", "b_should_be_easy", "c_no_hurry", "d_metropo
 
 fun main(args: Array<String>) {
     for (name in dataNames) {
-        val data = readData(File("./$name.in"))
+        val data = readData(File("./data/$name.in"))
         val results = compute(data)
-        writeResult(results, File("./$name.out"))
+        writeResult(results, File("./data/$name.out"))
     }
 }
 
@@ -21,9 +22,10 @@ fun readData(inFile: File): DataSet {
     val lines = inFile.readLines()
 
     fun getRides(n: Int): List<Ride> {
+        var i = 0
         return lines.drop(1).take(n).map {
             it.split(" ").map { it.toInt() }.let {
-                Ride(Point(it[0], it[1]), Point(it[2], it[3]), it[4], it[5])
+                Ride(i++, Point(it[0], it[1]), Point(it[2], it[3]), it[4], it[5])
             }
         }
     }
@@ -34,29 +36,38 @@ fun readData(inFile: File): DataSet {
 }
 
 fun compute(data: DataSet): List<Vehicle> {
-    val rides = data.rides
     val assignedRides = mutableSetOf<Int>()
-
-    val vehicles = List(data.vehicles) { Vehicle() }
+    val vehiclesList = List(data.vehicles) { Vehicle() }
 
     for (t in 0 until data.steps) {
-        vehicles.forEach { v ->
-            if (v.finished)
-                rides.filterIndexed { index, _ -> !assignedRides.contains(index) }
-                    .minWith(Comparator.comparing<Ride, Int> { ((t - it.earliestStart) - (v.location - it.start).steps).absoluteValue }.thenComparing<Int> { t - it.earliestStart }.thenComparing<Int> { (v.location - it.start).steps })
-                    ?.let { ride ->
-                        val i = rides.indexOf(ride)
-                        assignedRides.add(i)
-                        v.assignRide(ride, i)
+        vehiclesList.filter { !it.hasRide }.let { vehicles ->
+            val sortedRides = data.rides
+                .filter { !assignedRides.contains(it.i) }
+                .flatMap { r -> vehicles.map { Pair(r, it) } }
+                .sortedWith(
+                    Comparator
+                        .comparingInt<Pair<Ride, Vehicle>> { (r, v) -> ((r.earliestStart - t) - (v.location - r.start).steps).absoluteValue }
+                        .thenComparingInt { (r, v) -> r.latestFinish - (t - r.steps - (v.location - r.start).steps) }
+                )
+
+            while (vehicles.any { !it.hasRide } && assignedRides.size != data.rides.size)
+                sortedRides
+                    .asSequence()
+                    .filter { (r, v) -> !assignedRides.contains(r.i) && !v.hasRide }
+                    .firstOrNull()
+                    ?.let { (r, v) ->
+                        v.assignRide(r)
+                        assignedRides.add(r.i)
                     }
-            v.move(t)
         }
 
-        if (assignedRides.size == rides.size)
+        vehiclesList.forEach { it.move(t) }
+
+        if (assignedRides.size == data.rides.size && vehiclesList.all { it.finished })
             break
     }
 
-    return vehicles
+    return vehiclesList
 }
 
 fun writeResult(results: List<Vehicle>, outFile: File) {
@@ -65,31 +76,29 @@ fun writeResult(results: List<Vehicle>, outFile: File) {
 
 data class DataSet(val rows: Int, val columns: Int, val vehicles: Int, val rides: List<Ride>, val bonus: Int, val steps: Int)
 
-data class Ride(val start: Point, val end: Point, val earliestStart: Int, val latestFinish: Int) {
+data class Ride(val i: Int, val start: Point, val end: Point, val earliestStart: Int, val latestFinish: Int) {
     val steps: Int = (start - end).steps
+    override fun toString(): String = "Ride($i, $start -> $end, s=$earliestStart, f=$latestFinish)"
 }
 
 data class Point(val x: Int = 0, val y: Int = 0) {
     val steps: Int = x.absoluteValue + y.absoluteValue
-
     operator fun minus(that: Point): Point = Point((this.x - that.x), (this.y - that.y))
+    override fun toString(): String = "[$x, $y]"
 }
 
 class Vehicle {
 
     val ridesFinished = mutableSetOf<Int>()
 
-    fun assignRide(ride: Ride, i: Int) {
+    fun assignRide(ride: Ride) {
         this.ride = ride
-        this.rideIndex = i
     }
 
     private fun clearRide() {
         ride = null
-        rideIndex = -1
+        rideStarted = false
     }
-
-    private var rideIndex = -1
 
     private var ride: Ride? = null
         set(value) {
@@ -107,10 +116,13 @@ class Vehicle {
         private set
 
     val finished: Boolean get() = ride.let { it == null || location == it.end }
+    val hasRide: Boolean get() = ride != null
 
     fun move(t: Int) {
-        if (!rideStarted && ride?.let { it.start == location && it.earliestStart <= t } == true)
-            rideStarted = true
+        ride?.let {
+            if (!rideStarted && it.start == location && t >= it.earliestStart)
+                rideStarted = true
+        }
 
         (destination - location).takeUnless { it.steps == 0 }?.let {
             var x = location.x
@@ -126,12 +138,15 @@ class Vehicle {
             location = p
         }
 
-        if (ride?.end == location) {
-            ridesFinished.add(rideIndex)
-            clearRide()
-        } else if (ride?.let { it.end != location && t >= it.latestFinish } == true) {
-            clearRide()
+        ride?.let {
+            if (t < it.latestFinish) {
+                if (it.end == location) {
+                    ridesFinished.add(it.i)
+                    clearRide()
+                }
+            } else {
+                clearRide()
+            }
         }
     }
 }
-
